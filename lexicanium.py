@@ -7,48 +7,61 @@ lexicanium
 import concurrent.futures
 import time
 import zipfile
-import os
-import shutil
+from pathlib import Path
+import logging
 
-zip_file_dir = "./archive"
-destination_directory = "./Data-Slates"
+import click
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+DEFAULT_ARCHIVE_DIR = Path("./archive")
+DEFAULT_DESTINATION = Path("./Data-Slates")
 
 
-def extract_zip(filepath):
+def extract_zip(filepath: Path, destination: Path) -> bool:
     try:
         with zipfile.ZipFile(filepath, 'r') as zf:
-            zf.extractall(destination_directory)
+            zf.extractall(destination)
+        return True
     except Exception as e:
-        print(f'ERROR: {e}')
+        logger.error(f'ERROR: {e}')
+        return False
 
 
-def proc_load_from_archive(zip_paths):
+def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Path]:
+    extracted = []
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        future_to_zip = {executor.submit(extract_zip, filepath): filepath for filepath in zip_paths}
+        future_to_zip = {executor.submit(extract_zip, filepath, destination): filepath for filepath in zip_paths}
         for future in concurrent.futures.as_completed(future_to_zip):
             data = future_to_zip[future]
             try:
                 future.result()
-                print(f'Extracted: {data}')
+                extracted.append(data)
+                logger.info(f'Extracted: {data}')
             except Exception as e:
-                print(f'ERROR: {e}')
+                logger.error(f'ERROR: {e}')
+    return extracted
 
 
-def main():
-    if not os.path.exists(destination_directory):
-        os.makedirs(destination_directory)
+@click.command()
+@click.option('--source', '-s', type=click.Path(exists=True, path_type=Path),
+              default=DEFAULT_ARCHIVE_DIR, help='Directory containing zip files')
+@click.option('--dest', '-d', type=click.Path(path_type=Path),
+              default=DEFAULT_DESTINATION, help='Destination directory for extraction')
+def main(source: Path, dest: Path) -> None:
+    """Extract zip files from archive directory into Data-Slates."""
+    dest.mkdir(parents=True, exist_ok=True)
 
-    if not os.path.exists(zip_file_dir):
-        print(f'Heretical path detected: {zip_file_dir}')
-        exit(1)
+    zip_paths = list(source.glob("*.zip"))
+    if not zip_paths:
+        logger.warning(f'No zip files found in {source}')
+        return
 
-    zip_paths = [os.path.join(zip_file_dir, filepath) for filepath in os.listdir(zip_file_dir)]
-
-    start_proc_time = time.perf_counter()
-    proc_load_from_archive(zip_paths)
-    end_proc_time = time.perf_counter()
-    elapsed_proc_time = end_proc_time - start_proc_time
-    print(f'Process team finished in: {elapsed_proc_time}')
+    start_time = time.perf_counter()
+    extracted = proc_load_from_archive(zip_paths, dest)
+    elapsed = time.perf_counter() - start_time
+    logger.info(f'Extracted {len(extracted)} archives in: {elapsed:.2f} seconds')
 
 
 if __name__ == "__main__":
