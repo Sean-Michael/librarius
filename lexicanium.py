@@ -1,5 +1,7 @@
 '''
-lexicanium - extracts .zip files from archive into Data-Slates
+lexicanium 
+    - extracts .zip files from archive into Data-Slates
+    - Data-Slates are loaded into vector database
 '''
 
 import zipfile
@@ -8,8 +10,7 @@ import os
 zip_file_dir = "./archive"
 destination_directory = "./Data-Slates"
 
-def main():
-
+def load_from_archive():
     if not os.path.exists(destination_directory):
         os.makedirs(destination_directory)
 
@@ -25,6 +26,10 @@ def main():
             print(f"ERROR: {e}")
     
     print(os.listdir(destination_directory))
+
+
+def main():
+    load_from_archive()
 
 
 
