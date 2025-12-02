@@ -4,6 +4,8 @@ lexicanium
     - Data-Slates are loaded into vector database
 '''
 
+import concurrent.futures
+import time
 import zipfile
 import os
 
@@ -14,18 +16,25 @@ def load_from_archive():
     if not os.path.exists(destination_directory):
         os.makedirs(destination_directory)
 
-    zip_files = [os.path.join(zip_file_dir, filepath) for filepath in os.listdir(zip_file_dir)]
+    zip_paths = [os.path.join(zip_file_dir, filepath) for filepath in os.listdir(zip_file_dir)]
 
-    print(f'Found {len(zip_files)} .zip files in {zip_file_dir}')
+    print(f'Found {len(zip_paths)} .zip files in {zip_file_dir}')
 
-    for filename in zip_files:
-        try:
-            with zipfile.ZipFile(filename, 'r') as zf:
-                zf.extractall(destination_directory)
-        except Exception as e:
-            print(f"ERROR: {e}")
+    zip_files = [zipfile.ZipFile(filename, 'r') for filename in zip_paths]
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_zip = {executor.submit(zf.extractall, destination_directory): zf for zf in zip_files}
+        for future in concurrent.futures.as_completed(future_to_zip):
+            data = future_to_zip[future]
+            try:
+                future.result()
+                print(f'Extracted: {data}')
+            except Exception as e:
+                print(f'ERROR: {e}')
+            future_to_zip[future].close()
+
+    return os.listdir(destination_directory)
     
-    print(os.listdir(destination_directory))
 
 
 def main():
