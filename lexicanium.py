@@ -38,6 +38,7 @@ def connect_db():
         logger.error(e)
         exit(1)
 
+
 def create_table(conn, name: str = "chunks"):
     cursor = conn.cursor()
     cursor.execute(f"""
@@ -83,28 +84,43 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
     return extracted
 
 
-def chunk_data_slates(dest):
+def insert_chunk(conn, game: str, category: str, source_file: str, chunk_index: int, content: str, element_type: str):
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO chunks (game, category, source_file, chunk_index, content, element_type)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (game, category, source_file, chunk_index, content, element_type))
+    conn.commit()
+    cursor.close()
+
+
+def categorize_pdf(pdf: Path) -> str:
+    name = pdf.name.lower()
+    if 'rules' in name or 'core' in name:
+        return "rules"
+    elif 'codex' in name:
+        return "codices"
+    return "misc"
+
+
+def process_pdf(conn, game: str, category: str, pdf: Path):
+    logger.info(f"Processing: {pdf.name}")
+    elements = partition_pdf(str(pdf))
+    for i, el in enumerate(elements):
+        insert_chunk(conn, game, category, pdf.name, i, str(el), type(el).__name__)
+    logger.info(f"Inserted {len(elements)} chunks from {pdf.name}")
+
+
+def chunk_data_slates(dest, conn):
     directories = [d for d in dest.iterdir() if d.is_dir()]
-    
-    reliquary = {}
 
-    for game in directories:
-        reliquary[game] = {
-            "rules": [],
-            "codices": [],
-            "misc": []
-        }
-        pdf_files = list(game.glob("*.pdf"))
-        logger.info(f"Found {len(pdf_files)} PDFs for {game.name}")
+    for game_dir in directories:
+        pdf_files = list(game_dir.glob("*.pdf"))
+        logger.info(f"Found {len(pdf_files)} PDFs for {game_dir.name}")
+
         for pdf in pdf_files:
-            if 'rules' in pdf.name.lower() or 'core' in pdf.name.lower():
-                reliquary[game]["rules"].append(pdf)
-            elif 'codex' in pdf.name.lower():
-                reliquary[game]["codices"].append(pdf)
-            else:
-                reliquary[game]["misc"].append(pdf)
-        logger.info(f"{game}\n\tRules: {reliquary[game].get('rules')}\n\tCodices: {reliquary[game].get('codices')}\n\tMisc: {reliquary[game].get('misc')}")
-
+            category = categorize_pdf(pdf)
+            process_pdf(conn, game_dir.name, category, pdf)
                     
 
 @click.command()
@@ -128,7 +144,10 @@ def main(source: Path, dest: Path, skip_extract: bool) -> None:
         elapsed = time.perf_counter() - start_time
         logger.info(f'Extracted {len(extracted)} archives in: {elapsed:.2f} seconds')
 
-    chunk_data_slates(dest)
+    conn = connect_db()
+    create_table(conn)
+    chunk_data_slates(dest, conn)
+    conn.close()
 
 if __name__ == "__main__":
     main()
