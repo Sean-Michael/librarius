@@ -1,7 +1,9 @@
 '''
-lexicanium 
-    - extracts .zip files from archive into Data-Slates
-    - Data-Slates are loaded into vector database
+Lexicanium - Initiate of the Librarius
+    - Extracts sacred .zip archives into Data-Slates
+    - Data-Slates are sanctified and loaded into the Cogitator vault
+
+"Knowledge is power, guard it well." - The Lion
 '''
 
 import concurrent.futures
@@ -15,8 +17,29 @@ import psycopg2.extras
 import click
 import json
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='[LIBRARIUS] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+# Dark Angels Librarius logging messages
+VOXCAST = {
+    'init': "The Lexicanium awakens. For the Lion!",
+    'pool_created': "Cogitator link established to vault '{dbname}'",
+    'db_ready': "Sacred table '{table}' prepared.",
+    'db_fail': "Heretical corruption detected in database rites: {error}",
+    'extract_success': "Data-Slate recovered from archive: {path}",
+    'extract_fail': "Archive extraction failed - possible Chaos taint: {error}",
+    'extraction_complete': "Recovered {count} Data-Slates in {time:.2f} seconds.",
+    'no_archives': "No sacred archives found in {source}.",
+    'pdf_found': "Located {count} sacred texts in {game} sector",
+    'pdf_skip': "Text '{name}' already inscribed ({count} fragments in vault). Moving on.",
+    'pdf_processing': "Lexicanium begins sanctification of: {name}",
+    'batch_insert': "Inscribed {count} fragments into the Librarius",
+    'batch_fail': "Failed to inscribe fragments - consult the Watchers: {error}",
+    'pdf_complete': "Sanctified {count} fragments from {name}. The Emperor Protects.",
+    'pdf_fail': "Sanctification failed for {name}: {error}. Summon a Techmarine!",
+    'creds_fail': "Cannot access vault credentials. The Fallen must not learn our secrets!",
+    'finished': "++RITUAL COMPLETE++ The data-communion has ended. Praise the Omnissiah."
+}
 
 DEFAULT_ARCHIVE_DIR = Path("./archive")
 DEFAULT_DESTINATION = Path("./Data-Slates")
@@ -27,8 +50,8 @@ def load_db_creds() -> dict:
     try:
         with open(DEFAULT_PG_CREDS, 'r') as json_creds:
             return json.load(json_creds)
-    except Exception as e:
-        logger.error(e)
+    except Exception:
+        logger.error(VOXCAST['creds_fail'])
         exit(1)
 
 
@@ -36,10 +59,10 @@ def create_connection_pool(min_conn: int = 2, max_conn: int = 10) -> pool.Thread
     creds = load_db_creds()
     try:
         conn_pool = pool.ThreadedConnectionPool(min_conn, max_conn, **creds)
-        logger.info(f"Connection pool created for {creds.get('dbname')}")
+        logger.info(VOXCAST['pool_created'].format(dbname=creds.get('dbname')))
         return conn_pool
     except Exception as e:
-        logger.error(e)
+        logger.error(VOXCAST['db_fail'].format(error=e))
         exit(1)
 
 
@@ -60,9 +83,9 @@ def setup_database(conn, table_name: str = "chunks"):
             )
         """)
         conn.commit()
-        logger.info(f"Database setup complete, table '{table_name}' ready")
+        logger.info(VOXCAST['db_ready'].format(table=table_name))
     except Exception as e:
-        logger.error(f"Failed to setup database: {e}")
+        logger.error(VOXCAST['db_fail'].format(error=e))
         conn.rollback()
     finally:
         cursor.close()
@@ -74,7 +97,7 @@ def extract_zip(filepath: Path, destination: Path) -> bool:
             zf.extractall(destination)
         return True
     except Exception as e:
-        logger.error(f'ERROR: {e}')
+        logger.error(VOXCAST['extract_fail'].format(error=e))
         return False
 
 
@@ -87,9 +110,9 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
             try:
                 future.result()
                 extracted.append(data)
-                logger.info(f'Extracted: {data}')
+                logger.info(VOXCAST['extract_success'].format(path=data))
             except Exception as e:
-                logger.error(f'ERROR: {e}')
+                logger.error(VOXCAST['extract_fail'].format(error=e))
     return extracted
 
 
@@ -118,9 +141,9 @@ def insert_chunks_batch(conn, chunks: list[tuple]):
             page_size=100
         )
         conn.commit()
-        logger.info(f"Inserted batch of {len(chunks)} chunks")
+        logger.info(VOXCAST['batch_insert'].format(count=len(chunks)))
     except Exception as e:
-        logger.error(f"Failed to insert batch: {e}")
+        logger.error(VOXCAST['batch_fail'].format(error=e))
         conn.rollback()
     finally:
         cursor.close()
@@ -140,12 +163,12 @@ def process_pdf(conn_pool: pool.ThreadedConnectionPool, game: str, category: str
     try:
         existing_count = get_chunk_count(conn, pdf.name)
         if existing_count > 0:
-            logger.info(f"Skipping {pdf.name} ({existing_count} chunks already in db)")
+            logger.info(VOXCAST['pdf_skip'].format(name=pdf.name, count=existing_count))
             return
     finally:
         conn_pool.putconn(conn)
 
-    logger.info(f"Processing: {pdf.name}")
+    logger.info(VOXCAST['pdf_processing'].format(name=pdf.name))
     elements = partition_pdf(str(pdf))
     chunks = [
         (game, category, pdf.name, i, str(el), type(el).__name__)
@@ -155,7 +178,7 @@ def process_pdf(conn_pool: pool.ThreadedConnectionPool, game: str, category: str
     conn = conn_pool.getconn()
     try:
         insert_chunks_batch(conn, chunks)
-        logger.info(f"Inserted {len(elements)} chunks from {pdf.name}")
+        logger.info(VOXCAST['pdf_complete'].format(count=len(elements), name=pdf.name))
     finally:
         conn_pool.putconn(conn)
 
@@ -166,7 +189,7 @@ def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool, max_wo
     pdf_tasks = []
     for game_dir in directories:
         pdf_files = list(game_dir.glob("*.pdf"))
-        logger.info(f"Found {len(pdf_files)} PDFs for {game_dir.name}")
+        logger.info(VOXCAST['pdf_found'].format(count=len(pdf_files), game=game_dir.name))
         for pdf in pdf_files:
             category = categorize_pdf(pdf)
             pdf_tasks.append((game_dir.name, category, pdf))
@@ -181,7 +204,7 @@ def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool, max_wo
             try:
                 future.result()
             except Exception as e:
-                logger.error(f"Failed to process {pdf.name}: {e}")
+                logger.error(VOXCAST['pdf_fail'].format(name=pdf.name, error=e))
                     
 
 @click.command()
@@ -194,16 +217,18 @@ def main(source: Path, dest: Path, skip_extract: bool) -> None:
     """Extract zip files from archive directory into Data-Slates."""
     dest.mkdir(parents=True, exist_ok=True)
 
+    logger.info(VOXCAST['init'])
+
     if not skip_extract:
         zip_paths = list(source.glob("*.zip"))
         if not zip_paths:
-            logger.warning(f'No zip files found in {source}')
+            logger.warning(VOXCAST['no_archives'].format(source=source))
             return
 
         start_time = time.perf_counter()
         extracted = proc_load_from_archive(zip_paths, dest)
         elapsed = time.perf_counter() - start_time
-        logger.info(f'Extracted {len(extracted)} archives in: {elapsed:.2f} seconds')
+        logger.info(VOXCAST['extraction_complete'].format(count=len(extracted), time=elapsed))
 
     conn_pool = create_connection_pool()
 
@@ -213,6 +238,8 @@ def main(source: Path, dest: Path, skip_extract: bool) -> None:
 
     chunk_data_slates(dest, conn_pool)
     conn_pool.closeall()
+
+    logger.info(VOXCAST['finished'])
 
 if __name__ == "__main__":
     main()
