@@ -93,6 +93,18 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
     return extracted
 
 
+def get_chunk_count(conn, source_file: str) -> int:
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM chunks WHERE source_file = %s",
+            (source_file,)
+        )
+        return cursor.fetchone()[0]
+    finally:
+        cursor.close()
+
+
 def insert_chunks_batch(conn, chunks: list[tuple]):
     cursor = conn.cursor()
     try:
@@ -123,19 +135,29 @@ def categorize_pdf(pdf: Path) -> str:
     return "misc"
 
 
-def process_pdf(pool: pool.ThreadedConnectionPool, game: str, category: str, pdf: Path):
+def process_pdf(conn_pool: pool.ThreadedConnectionPool, game: str, category: str, pdf: Path):
+    conn = conn_pool.getconn()
+    try:
+        existing_count = get_chunk_count(conn, pdf.name)
+        if existing_count > 0:
+            logger.info(f"Skipping {pdf.name} ({existing_count} chunks already in db)")
+            return
+    finally:
+        conn_pool.putconn(conn)
+
     logger.info(f"Processing: {pdf.name}")
     elements = partition_pdf(str(pdf))
     chunks = [
         (game, category, pdf.name, i, str(el), type(el).__name__)
         for i, el in enumerate(elements)
     ]
-    conn = pool.getconn()
+
+    conn = conn_pool.getconn()
     try:
         insert_chunks_batch(conn, chunks)
         logger.info(f"Inserted {len(elements)} chunks from {pdf.name}")
     finally:
-        pool.putconn(conn)
+        conn_pool.putconn(conn)
 
 
 def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool, max_workers: int = 4):
