@@ -2,8 +2,7 @@
 Lexicanium - Initiate of the Librarius
     - Extracts sacred .zip archives into Data-Slates
     - Data-Slates are sanctified and loaded into the Cogitator vault
-
-"Knowledge is power, guard it well." - The Lion
+    - Summons the machine spirit of unstructured
 '''
 
 import concurrent.futures
@@ -17,28 +16,35 @@ import psycopg2.extras
 import click
 import json
 
+
+class Sigil:
+    GREEN = '\033[38;5;34m'
+    GOLD = '\033[38;5;178m'
+    RED = '\033[38;5;124m'
+    RESET = '\033[0m'
+
+
 logging.basicConfig(level=logging.INFO, format='[LIBRARIUS] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# Dark Angels Librarius logging messages
 VOXCAST = {
-    'init': "The Lexicanium awakens. For the Lion!",
+    'init': f"{Sigil.GOLD}++AWAKENING++{Sigil.RESET} The Lexicanium stirs from dormancy. {Sigil.GREEN}For the Lion!{Sigil.RESET}",
     'pool_created': "Cogitator link established to vault '{dbname}'",
-    'db_ready': "Sacred table '{table}' prepared.",
-    'db_fail': "Heretical corruption detected in database rites: {error}",
-    'extract_success': "Data-Slate recovered from archive: {path}",
-    'extract_fail': "Archive extraction failed - possible Chaos taint: {error}",
+    'db_ready': f"Sacred table '{{table}}' prepared. {Sigil.GREEN}The Machine Spirit complies.{Sigil.RESET}",
+    'db_fail': f"{Sigil.RED}++CORRUPTION DETECTED++{Sigil.RESET} Heretical taint in database rites: {{error}}",
+    'extract_success': "Data-Slate extracted: {path}",
+    'extract_fail': f"{Sigil.RED}Extraction failure - possible Chaos taint: {{error}}{Sigil.RESET}",
     'extraction_complete': "Recovered {count} Data-Slates in {time:.2f} seconds.",
-    'no_archives': "No sacred archives found in {source}.",
-    'pdf_found': "Located {count} sacred texts in {game} sector",
-    'pdf_skip': "Text '{name}' already inscribed ({count} fragments in vault). Moving on.",
-    'pdf_processing': "Lexicanium begins sanctification of: {name}",
-    'batch_insert': "Inscribed {count} fragments into the Librarius",
-    'batch_fail': "Failed to inscribe fragments - consult the Watchers: {error}",
-    'pdf_complete': "Sanctified {count} fragments from {name}. The Emperor Protects.",
-    'pdf_fail': "Sanctification failed for {name}: {error}. Summon a Techmarine!",
-    'creds_fail': "Cannot access vault credentials. The Fallen must not learn our secrets!",
-    'finished': "++RITUAL COMPLETE++ The data-communion has ended. Praise the Omnissiah."
+    'no_archives': "No sacred archives located in {source}. The hunt continues...",
+    'pdf_found': "Auspex scan: {count} sacred texts in {game} sector",
+    'pdf_skip': "Text '{name}' already inscribed ({count} fragments in vault)",
+    'pdf_processing': "Sanctifying: {name} ({size:.1f} MB) - this may take a while...",
+    'batch_insert': "{count} fragments committed to the Librarius",
+    'batch_fail': f"{Sigil.RED}Inscription failure - consult the Watchers: {{error}}{Sigil.RESET}",
+    'pdf_complete': f"Sanctified {{count}} fragments from {{name}}. {Sigil.GREEN}The Emperor Protects.{Sigil.RESET}",
+    'pdf_fail': f"{Sigil.RED}Sanctification failed for {{name}}: {{error}}. Summon a Techmarine!{Sigil.RESET}",
+    'creds_fail': f"{Sigil.RED}++ACCESS DENIED++{Sigil.RESET} Vault credentials corrupted. The Fallen must not learn our secrets!",
+    'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} The data-communion has ended. {Sigil.GREEN}Praise the Omnissiah.{Sigil.RESET}"
 }
 
 DEFAULT_ARCHIVE_DIR = Path("./archive")
@@ -168,8 +174,12 @@ def process_pdf(conn_pool: pool.ThreadedConnectionPool, game: str, category: str
     finally:
         conn_pool.putconn(conn)
 
-    logger.info(VOXCAST['pdf_processing'].format(name=pdf.name))
+    file_size_mb = pdf.stat().st_size / (1024 * 1024)
+    logger.info(VOXCAST['pdf_processing'].format(name=pdf.name, size=file_size_mb))
+    start = time.perf_counter()
     elements = partition_pdf(str(pdf))
+    elapsed = time.perf_counter() - start
+    logger.info(f"Parsed {pdf.name} in {elapsed:.1f}s - extracted {len(elements)} elements")
     chunks = [
         (game, category, pdf.name, i, str(el), type(el).__name__)
         for i, el in enumerate(elements)
