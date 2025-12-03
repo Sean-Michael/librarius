@@ -46,7 +46,6 @@ def create_connection_pool(min_conn: int = 2, max_conn: int = 10) -> pool.Thread
 def setup_database(conn, table_name: str = "chunks"):
     cursor = conn.cursor()
     try:
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id SERIAL PRIMARY KEY,
