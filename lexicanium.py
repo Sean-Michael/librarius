@@ -9,7 +9,7 @@ import time
 import zipfile
 from pathlib import Path
 import logging
-
+import unstructured
 import click
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -44,25 +44,55 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
     return extracted
 
 
+def chunk_data_slates(dest):
+    # Make a new directory for the processed chunks?
+    # Actually just write them to postgres db
+    directories = [d for d in dest.iterdir() if d.is_dir()]
+    
+    # So each game is going to be represented by a top level dir in Data-Slates/
+    reliquary = {}
+
+    for game in directories:
+        reliquary[game] = {
+            "rules": [],
+            "codices": [],
+            "misc": []
+        }
+        pdf_files = list(game.glob("*.pdf"))
+        logger.info(f"Found {len(pdf_files)} PDFs for {game.name}")
+        for pdf in pdf_files:
+            if 'rules' in pdf.name.lower() or 'core' in pdf.name.lower():
+                reliquary[game]["rules"].append(pdf)
+            elif 'codex' in pdf.name.lower():
+                reliquary[game]["codices"].append(pdf)
+            else:
+                reliquary[game]["misc"].append(pdf)
+        logger.info(f"{game}\n\tRules: {reliquary[game].get('rules')}\n\tCodices: {reliquary[game].get('codices')}\n\tMisc: {reliquary[game].get('misc')}")
+
+                    
+
 @click.command()
 @click.option('--source', '-s', type=click.Path(exists=True, path_type=Path),
               default=DEFAULT_ARCHIVE_DIR, help='Directory containing zip files')
 @click.option('--dest', '-d', type=click.Path(path_type=Path),
               default=DEFAULT_DESTINATION, help='Destination directory for extraction')
-def main(source: Path, dest: Path) -> None:
+@click.option('--skip-extract', is_flag=True, help='Skip zip extraction, process existing Data-Slates only')
+def main(source: Path, dest: Path, skip_extract: bool) -> None:
     """Extract zip files from archive directory into Data-Slates."""
     dest.mkdir(parents=True, exist_ok=True)
 
-    zip_paths = list(source.glob("*.zip"))
-    if not zip_paths:
-        logger.warning(f'No zip files found in {source}')
-        return
+    if not skip_extract:
+        zip_paths = list(source.glob("*.zip"))
+        if not zip_paths:
+            logger.warning(f'No zip files found in {source}')
+            return
 
-    start_time = time.perf_counter()
-    extracted = proc_load_from_archive(zip_paths, dest)
-    elapsed = time.perf_counter() - start_time
-    logger.info(f'Extracted {len(extracted)} archives in: {elapsed:.2f} seconds')
+        start_time = time.perf_counter()
+        extracted = proc_load_from_archive(zip_paths, dest)
+        elapsed = time.perf_counter() - start_time
+        logger.info(f'Extracted {len(extracted)} archives in: {elapsed:.2f} seconds')
 
+    chunk_data_slates(dest)
 
 if __name__ == "__main__":
     main()
