@@ -3,3 +3,9 @@ archive/
 Data-Slates/
 
 .venv
+
+# Database credentials
+pg-credentials.json
+
+# OpenAI API key
+openai-api-key.txt

@@ -9,14 +9,53 @@ import time
 import zipfile
 from pathlib import Path
 import logging
-import unstructured
+from unstructured.partition.pdf import partition_pdf
+import psycopg2
 import click
+import json
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 DEFAULT_ARCHIVE_DIR = Path("./archive")
 DEFAULT_DESTINATION = Path("./Data-Slates")
+DEFAULT_PG_CREDS = Path("./pg-credentials.json")
+
+
+def connect_db():
+    try:
+        with open(DEFAULT_PG_CREDS, 'r') as json_creds:
+            creds = json.load(json_creds)
+    except Exception as e:
+        logger.error(e)
+        exit(1)
+
+    try:
+        conn = psycopg2.connect(**creds)
+        logger.info(f"Connected to PostgreSQL database {creds.get('dbname')} successfully")
+        return conn
+    except Exception as e:
+        logger.error(e)
+        exit(1)
+
+def create_table(conn, name: str = "chunks"):
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {name} (
+            id SERIAL PRIMARY KEY,
+            game VARCHAR(100),
+            category VARCHAR(50),
+            source_file VARCHAR(500),
+            chunk_index INTEGER,
+            content TEXT,
+            element_type VARCHAR(100),
+            embedding VECTOR(1536),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    logger.info(f"Table '{name}' ready")
 
 
 def extract_zip(filepath: Path, destination: Path) -> bool:
@@ -45,11 +84,8 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
 
 
 def chunk_data_slates(dest):
-    # Make a new directory for the processed chunks?
-    # Actually just write them to postgres db
     directories = [d for d in dest.iterdir() if d.is_dir()]
     
-    # So each game is going to be represented by a top level dir in Data-Slates/
     reliquary = {}
 
     for game in directories:
