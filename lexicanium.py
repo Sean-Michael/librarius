@@ -41,22 +41,27 @@ def connect_db():
 
 def create_table(conn, name: str = "chunks"):
     cursor = conn.cursor()
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {name} (
-            id SERIAL PRIMARY KEY,
-            game VARCHAR(100),
-            category VARCHAR(50),
-            source_file VARCHAR(500),
-            chunk_index INTEGER,
-            content TEXT,
-            element_type VARCHAR(100),
-            embedding VECTOR(1536),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    cursor.close()
-    logger.info(f"Table '{name}' ready")
+    try:
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {name} (
+                id SERIAL PRIMARY KEY,
+                game VARCHAR(100),
+                category VARCHAR(50),
+                source_file VARCHAR(500),
+                chunk_index INTEGER,
+                content TEXT,
+                element_type VARCHAR(100),
+                embedding VECTOR(1536),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        logger.info(f"Table '{name}' ready")
+    except Exception as e:
+        logger.error(f"Failed to create table '{name}': {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
 
 
 def extract_zip(filepath: Path, destination: Path) -> bool:
@@ -86,12 +91,17 @@ def proc_load_from_archive(zip_paths: list[Path], destination: Path) -> list[Pat
 
 def insert_chunk(conn, game: str, category: str, source_file: str, chunk_index: int, content: str, element_type: str):
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO chunks (game, category, source_file, chunk_index, content, element_type)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (game, category, source_file, chunk_index, content, element_type))
-    conn.commit()
-    cursor.close()
+    try:
+        cursor.execute("""
+            INSERT INTO chunks (game, category, source_file, chunk_index, content, element_type)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (game, category, source_file, chunk_index, content, element_type))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to insert chunk {chunk_index} from {source_file}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
 
 
 def categorize_pdf(pdf: Path) -> str:
