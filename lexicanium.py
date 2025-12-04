@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 VOXCAST = {
     'init': f"{Sigil.GOLD}++AWAKENING++{Sigil.RESET} The Lexicanium stirs from dormancy. {Sigil.GREEN}For the Lion!{Sigil.RESET}",
     'pool_created': "Cogitator link established to vault '{dbname}'",
-    'db_ready': f"Sacred table '{{table}}' prepared. {Sigil.GREEN}The Machine Spirit complies.{Sigil.RESET}",
+    'db_ready': f"Sacred table '{{table}}' prepared. {Sigil.GREEN}The Machine Spirit is pleased.{Sigil.RESET}",
     'db_fail': f"{Sigil.RED}++CORRUPTION DETECTED++{Sigil.RESET} Heretical taint in database rites: {{error}}",
     'extract_success': "Data-Slate extracted: {path}",
     'extract_fail': f"{Sigil.RED}Extraction failure - possible Chaos taint: {{error}}{Sigil.RESET}",
@@ -44,7 +44,7 @@ VOXCAST = {
     'pdf_complete': f"Sanctified {{count}} fragments from {{name}}. {Sigil.GREEN}The Emperor Protects.{Sigil.RESET}",
     'pdf_fail': f"{Sigil.RED}Sanctification failed for {{name}}: {{error}}. Summon a Techmarine!{Sigil.RESET}",
     'creds_fail': f"{Sigil.RED}++ACCESS DENIED++{Sigil.RESET} Vault credentials corrupted. The Fallen must not learn our secrets!",
-    'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} The data-communion has ended. {Sigil.GREEN}Praise the Omnissiah.{Sigil.RESET}"
+    'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} The data-communion has ended. {Sigil.GREEN}Praise the Omnissiah!{Sigil.RESET}"
 }
 
 DEFAULT_ARCHIVE_DIR = Path("./archive")
@@ -88,6 +88,8 @@ def setup_database(conn, table_name: str = "chunks"):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.commit()
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_chunks_source_file ON chunks(source_file);""")
         conn.commit()
         logger.info(VOXCAST['db_ready'].format(table=table_name))
     except Exception as e:
@@ -215,7 +217,7 @@ def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool, max_wo
                 future.result()
             except Exception as e:
                 logger.error(VOXCAST['pdf_fail'].format(name=pdf.name, error=e))
-                    
+
 
 @click.command()
 @click.option('--source', '-s', type=click.Path(exists=True, path_type=Path),
