@@ -233,12 +233,13 @@ def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
 
 
 @click.command()
+@click.option('--model_name', '-m', default=DEFAULT_MODEL, help='Model to run embedding with')
 @click.option('--filter-col', '-c', default=None, help='Column to filter on (e.g., "game")')
 @click.option('--filter-val', '-v', default=None, help='Value to filter for')
 @click.option('--list-values', '-l', default=None, help='List distinct values for a column and exit')
 @click.option('--batch-size', '-b', default=DEFAULT_BATCH_SIZE, help='Batch size for embedding')
 @click.option('--device', '-d', default=DEFAULT_DEVICE, help='Device to run model on (cuda/cpu)')
-def main(filter_col: str, filter_val: str, list_values: str, batch_size: int, device: str):
+def main(model_name: str, filter_col: str, filter_val: str, list_values: str, batch_size: int, device: str):
     conn_pool = create_connection_pool()
 
     if list_values:
@@ -259,7 +260,7 @@ def main(filter_col: str, filter_val: str, list_values: str, batch_size: int, de
     if filter_col and filter_val:
         logger.info(VOXCAST['filter_active'].format(col=filter_col, val=filter_val))
 
-    model = load_model(DEFAULT_MODEL, device)
+    model = load_model(model_name, device)
     if model is None:
         return
 
