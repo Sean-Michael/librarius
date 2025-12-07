@@ -145,7 +145,7 @@ def update_embeddings(conn, updates: list[tuple]):
 def load_model(model_name: str, device: str):
     try:
         model = SentenceTransformer(model_name, device=device)
-        logger.info(VOXCAST['model_loaded'])
+        logger.info(VOXCAST['model_loaded'].format(model=model_name,device=device))
         return model
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception = e))

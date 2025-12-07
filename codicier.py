@@ -1,5 +1,5 @@
 '''
-Codicier - _ of the Librarius
+Codicier - Oracle of the Librarius
  - Embeds a user query
  - Queries pgvector for top-k similar results
  - Stuff retrieved chunks + question into a prompt, get answer
@@ -7,14 +7,11 @@ Codicier - _ of the Librarius
 
 from pathlib import Path
 from psycopg2 import pool
-from psycopg2.extras import execute_values
 from sentence_transformers import SentenceTransformer
 import click
 import json
 import logging
 import numpy as np
-import queue
-import threading
 
 class Sigil:
     GREEN = '\033[38;5;34m'
@@ -28,24 +25,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_PG_CREDS = Path("./pg-credentials.json")
 DEFAULT_MODEL = "intfloat/multilingual-e5-large-instruct"
 DEFAULT_DEVICE = "cuda"
-DEFAULT_BATCH_SIZE = 100
 
 
 VOXCAST = {
-    'init': f"{Sigil.GOLD}++AWAKENING++{Sigil.RESET} The Epistolary channels the Immaterium. {Sigil.GREEN}For the Lion!{Sigil.RESET}",
+    'init': f"{Sigil.GOLD}++AWAKENING++{Sigil.RESET} The Codicier channels the Immaterium. {Sigil.GREEN}For the Lion!{Sigil.RESET}",
     'model_loaded': "Psychic conduit established: {model} on {device}",
-    'no_chunks': "No unembedded fragments remain. The Librarius is complete.",
-    'batch_start': "Channeling warp energies for {count} fragments...",
-    'batch_complete': "Inscribed {count} soul-marks into the vault.",
+    'embed_complete': "Query transcribed into the warp. Consulting the Librarius...",
     'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} All fragments have been sanctified. {Sigil.GREEN}Praise the Omnissiah!{Sigil.RESET}",
-    'progress': "Progress: {embedded}/{total} fragments embedded ({percent:.1f}%)",
     'exception': "Disturbance in the warp detected.. {exception}",
     'pool_created': "Cogitator link established to vault '{dbname}'",
     'db_fail': f"{Sigil.RED}++CORRUPTION DETECTED++{Sigil.RESET} Heretical taint in database rites: {{error}}",
     'creds_fail': f"{Sigil.RED}++SEAL BROKEN++{Sigil.RESET} The sacred credentials have been lost to the void.",
-    'filter_active': "Watchers performing filtration rites: {col} = '{val}'.",
-    'catalogus_header': f"{Sigil.GOLD}++CATALOGUS QUERY++{Sigil.RESET} Distinct values within column '{{column}}':",
-    'catalogus_item': "  * {val}",
     'close_conn': "Severing noospheric link. We are blind to the warp."
 }
 
@@ -73,19 +63,65 @@ def create_connection_pool(min_conn: int = 2, max_conn: int = 10) -> pool.Thread
 def load_model(model_name: str, device: str):
     try:
         model = SentenceTransformer(model_name, device=device)
-        logger.info(VOXCAST['model_loaded'])
+        logger.info(VOXCAST['model_loaded'].format(model=model_name,device=device))
         return model
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception = e))
         return None
 
 
+def get_k_nearest(embedded_query, conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT content, embedding <-> %s AS distance
+            FROM chunks
+            ORDER BY distance
+            LIMIT 5
+        """, (embedded_query,))
+    except Exception as e:
+        logger.error(VOXCAST['exception'].format(exception=e))
+    k_nearest=cursor.fetchall()
+    return k_nearest
+
+
+def format_pgvector(embedding: np.ndarray) -> str:
+    return '[' + ','.join(map(str, embedding.tolist())) + ']'
+
+
+def interactive_mode(model, conn):
+    while True:
+        try:
+            query = input(f"\n{Sigil.GOLD}[QUERY]{Sigil.RESET} Enter query (or 'q' to quit): ").strip()
+            if not query:
+                continue
+            if query.lower() in ('quit', 'exit', 'q'):
+                break
+            embed_user_query(query, model, conn)
+        except KeyboardInterrupt:
+            print()
+            break
+
+
+def embed_user_query(user_query, model, conn):
+
+    try:
+        embedded_query = model.encode(user_query, normalize_embeddings=True, show_progress_bar=True)
+        logger.info(VOXCAST['embed_complete'])
+        formatted_embed_query = format_pgvector(embedded_query)
+        print(get_k_nearest(formatted_embed_query, conn))
+            
+    except Exception as e:
+        logger.error(VOXCAST['exception'].format(exception=e))
+        return False 
+
+
 @click.command()
 @click.option('--model_name', '-m', default=DEFAULT_MODEL, help='Model to run embedding with')
 @click.option('--device', '-d', default=DEFAULT_DEVICE, help='Device to run model on (cuda/cpu)')
-def main(model_name: str, device: str):
+@click.argument('query', required=False)
+def main(model_name: str, device: str, query: str):
     conn_pool = create_connection_pool()
-
     conn = conn_pool.getconn()
 
     logger.info(VOXCAST['init'])
@@ -95,7 +131,10 @@ def main(model_name: str, device: str):
         return
 
     try:
-        pass
+        if query:
+            embed_user_query(query, model, conn)
+        else:
+            interactive_mode(model, conn)
     finally:
         logger.info(VOXCAST['close_conn'])
         conn_pool.closeall()
