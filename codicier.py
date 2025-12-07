@@ -70,15 +70,16 @@ def load_model(model_name: str, device: str):
         return None
 
 
-def get_k_nearest(embedded_query, conn):
+def get_k_nearest(embedded_query, conn, game):
     cursor = conn.cursor()
     try:
         cursor.execute("""
             SELECT content, embedding <-> %s AS distance
             FROM chunks
+            WHERE game = %s
             ORDER BY distance
             LIMIT 5
-        """, (embedded_query,))
+        """, (embedded_query,game))
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception=e))
     k_nearest=cursor.fetchall()
@@ -89,7 +90,7 @@ def format_pgvector(embedding: np.ndarray) -> str:
     return '[' + ','.join(map(str, embedding.tolist())) + ']'
 
 
-def interactive_mode(model, conn):
+def interactive_mode(model, conn, game):
     while True:
         try:
             query = input(f"\n{Sigil.GOLD}[QUERY]{Sigil.RESET} Enter query (or 'q' to quit): ").strip()
@@ -97,19 +98,19 @@ def interactive_mode(model, conn):
                 continue
             if query.lower() in ('quit', 'exit', 'q'):
                 break
-            embed_user_query(query, model, conn)
+            embed_user_query(query, model, conn, game)
         except KeyboardInterrupt:
             print()
             break
 
 
-def embed_user_query(user_query, model, conn):
+def embed_user_query(user_query, model, conn, game):
 
     try:
         embedded_query = model.encode(user_query, normalize_embeddings=True, show_progress_bar=True)
         logger.info(VOXCAST['embed_complete'])
         formatted_embed_query = format_pgvector(embedded_query)
-        print(get_k_nearest(formatted_embed_query, conn))
+        print(get_k_nearest(formatted_embed_query, conn, game))
             
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception=e))
@@ -119,8 +120,9 @@ def embed_user_query(user_query, model, conn):
 @click.command()
 @click.option('--model_name', '-m', default=DEFAULT_MODEL, help='Model to run embedding with')
 @click.option('--device', '-d', default=DEFAULT_DEVICE, help='Device to run model on (cuda/cpu)')
+@click.option('--game', '-g', default=None, help='Filter results to a particular game (30k, 40k, Killteam2)')
 @click.argument('query', required=False)
-def main(model_name: str, device: str, query: str):
+def main(model_name: str, device: str, query: str, game: str):
     conn_pool = create_connection_pool()
     conn = conn_pool.getconn()
 
@@ -132,9 +134,9 @@ def main(model_name: str, device: str, query: str):
 
     try:
         if query:
-            embed_user_query(query, model, conn)
+            embed_user_query(query, model, conn, game)
         else:
-            interactive_mode(model, conn)
+            interactive_mode(model, conn, game)
     finally:
         logger.info(VOXCAST['close_conn'])
         conn_pool.closeall()
