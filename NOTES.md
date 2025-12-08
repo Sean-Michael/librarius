@@ -1,5 +1,7 @@
 # Notes on Experimentations
 
+## 12/7/25
+
 Before running anything with RAG I took a baseline of the model's capabilities. 
 
 Qwen3:8b's thinking mode aboslutely freaked out and it also took FOREVER to run so I killed it and couldn't take a baseline. Will have to go back and test a smaller size and if I can disable thinking somehow with better prompting or see if the RAG can help it not hallucinate itself in an endless loop. 
@@ -105,3 +107,75 @@ Each Chapter has its own unique tactics, such as the Ultramarines' Vigilus Detac
 Prospero. These don't have a points cost and can be applied to any unit in your army.
 
 ```
+
+This is a bit wordy but seems right enough, will need to double check against the actual codex..
+
+And here is the interaction with the same prompts with RAG. Notice how the model doesn't want to give me misinformation and is sort of self-censoring? I thought that was cool. It is definitely giving me a smaller response, and I suspect the retrieval is not doing an amazing job at getting the relevant information...
+
+For reference, without telling it to check `40k` specifically (enabled via metadata in my table schema) it would initally say that it didn't know anything from the context... probably a bug I need to fix.
+
+Here are the options available for the [codicier](codicier.py)
+
+```bash
+Usage: codicier.py [OPTIONS] [QUERY]
+
+Options:
+  -e, --embed_model_name TEXT  Model to run embedding with
+  -c, --chat_model_name TEXT   Ollama model for chat responses
+  -d, --device TEXT            Device to run model on (cuda/cpu)
+  -g, --game TEXT              Filter results to a particular game (30k, 40k,
+                               Killteam2)
+  --help                       Show this message and exit.
+```
+
+Output of the same queries as above. 
+
+
+```bash
+(librarius) smr@caliban:~/Repos/librarius$ python3 codicier.py -g 40k -d cuda
+[LIBRARIUS] INFO: Cogitator link established to vault 'ragdb'
+[LIBRARIUS] INFO: ++AWAKENING++ The Codicier channels the Immaterium. For the Lion!
+[LIBRARIUS] INFO: Load pretrained SentenceTransformer: intfloat/multilingual-e5-large-instruct
+[LIBRARIUS] INFO: Psychic conduit established: intfloat/multilingual-e5-large-instruct on cuda
+
+++CHAT MODE ACTIVATED++
+Using chat model: mistral:7b
+Commands: 'q' to quit, 'clear' to reset conversation history
+
+[YOU] What wargear is available for Tactical Marines in Warhammer 40k 9th edition?
+
+[LIBRARIUS] INFO: Query transcribed into the warp. Consulting the Librarius...
+[LIBRARIUS] INFO: HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+
+[CODICIER]  Based on the provided context, Tactical Marines in Warhammer 40k 9th edition can be equipped with various wargear options. Here are some of them:
+
+1. Fragstorm grenade launcher
+2. Heavy bolter
+3. Power sword or power fist (Mk X variant)
+4. Boltgun, bolt pistol, chainsword, or combat blade (not explicitly mentioned for Mk X, but likely available due to commonality with other Space Marines)
+
+However, it's important to note that the context doesn't explicitly list all possible wargear options for Tactical Marines. For a comprehensive list of options and their potential variations, consult the official Warhammer 40k rulebooks or reliable online resources.
+```
+
+Okay, interesting. I suppose it did find some specific information and did give us the items. I'm a little suspiecious of the combat blade note. And compared to the response without RAG it's definitely lacking..
+
+```bash
+[YOU] [YOU] What wargear is available for Tactical Marines in Warhammer 40k 9th edition? What are the points values for those items and the limits that can be taken.
+
+[LIBRARIUS] INFO: Query transcribed into the warp. Consulting the Librarius...
+[LIBRARIUS] INFO: HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+
+[CODICIER]  Based on the provided context, here are the wargear options available for Tactical Marines in Warhammer 40k 9th edition, along with their corresponding points values:
+
+1. Astartes grenade launcher - +5 pts/model (available for units of 5-10 models)
+2. Hand flamer - +5 pts/model
+3. Plasma pistol - +S pts/model (S stands for the total number of models in the unit, e.g., if the unit size is 5 models, the cost would be +5 \* 5 = 25 pts)
+4. Power fist - +10 pts/model
+5. Power sword - +5 pts/model
+6. Thunder hammer - +20 pts (available for 1 model only)
+7. Heavy bolter - +5 pts/model (available for units of 5-10 models and 1 model, though the cost for a single model is not explicitly stated but can be inferred from Chunk 2 and Chunk 3 as 185 pts)
+
+The context does not provide explicit limits on how many wargear items each Tactical Marine can take. However, it's important to note that the rules for point limits, unit composition, and allowed combinations may be subject to change depending on the specific army list or faction you are playing with. For a comprehensive understanding of these rules, consult the official Warhammer 40k rulebooks or reliable online resources.
+```
+
+Again here, what's up with `+S` ? I've never seen that I'll have to go back and look. At least it's giving us some specific information. I also doubt that a heavy bolter costs `185` points.
