@@ -1,4 +1,11 @@
-# Librarius 
+```ascii
+ _     _________________  ___  ______ _____ _   _ _____ 
+| |   |_   _| ___ \ ___ \/ _ \ | ___ \_   _| | | /  ___|
+| |     | | | |_/ / |_/ / /_\ \| |_/ / | | | | | \ `--. 
+| |     | | | ___ \    /|  _  ||    /  | | | | | |`--. \
+| |_____| |_| |_/ / |\ \| | | || |\ \ _| |_| |_| /\__/ /
+\_____/\___/\____/\_| \_\_| |_/\_| \_|\___/ \___/\____/ 
+```
 
 > "A Librarium or Librarius is the command and communications centre of a Space Marine Chapter's fortress-monastery, and the repository for centuries of wisdom and history, culled from the reports, treatises and memoirs of the chapter's greatest warriors and finest minds." - [Lexicanum](https://wh40k.lexicanum.com/wiki/Librarium) 
 
@@ -11,8 +18,8 @@ This can enable agents or chatbots to interact with prompts or other tools in a 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1. Data Ingestion | PDF extraction, chunking, storage | Complete |
-| 2. Embedding | Vector embeddings via RayService | In Progress |
-| 3. Retrieval & Generation | LLM querying via RayService | Planned |
+| 2. Embedding | Vector embeddings via SentenceTransformers | Complete |
+| 3. Retrieval & Generation | Query embedding, retrieval, LLM chat | Complete |
 
 ## RAG Pipeline
 
@@ -65,3 +72,44 @@ The chunks are inserted into the database with the following table schema which 
 | `created_at` | `TIMESTAMP` | Auto-set insertion timestamp |
 
 You will notice that we included the `embedding` column but haven't processed any embeddings yet. On to the next step!
+
+### 2. Embedding
+
+Now that we have chunks in the database, we need to create vector embeddings for semantic search.
+
+#### Epistolary
+
+The [epistolary](epistolary.py) script loads a SentenceTransformer model and embeds all unembedded chunks in the database. It uses `intfloat/multilingual-e5-large-instruct` by default which produces 1024-dimensional embeddings.
+
+The script processes chunks in batches and uses a separate writer thread to keep the GPU busy while database writes happen in the background.
+
+```bash
+# embed all unembedded chunks
+python epistolary.py
+
+# filter to a specific game system
+python epistolary.py --filter-col game --filter-val "40k"
+
+# list available values for a column
+python epistolary.py --list-values game
+```
+
+You can also specify `--device cpu` if you don't have a GPU, though it will be significantly slower.
+
+### 3. Retrieval & Generation
+
+With embeddings in place, we can now query the Librarius.
+
+#### Codicier
+
+The [codicier](codicier.py) script embeds a user query using the same model, performs a k-nearest-neighbors search against pgvector, and stuffs the retrieved chunks into a prompt for an LLM. It uses Ollama for local inference.
+
+```bash
+# single query
+python codicier.py --game "40k" "What are the rules for overwatch?"
+
+# interactive chat mode (omit the query argument)
+python codicier.py --game "40k"
+```
+
+The `--game` flag filters retrieval to chunks from a specific game system, which helps anchor responses in the correct ruleset. In interactive mode you can type `clear` to reset conversation history or `q` to quit.
