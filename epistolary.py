@@ -29,6 +29,7 @@ DEFAULT_PG_CREDS = Path("./pg-credentials.json")
 DEFAULT_MODEL = "intfloat/multilingual-e5-large-instruct"
 DEFAULT_DEVICE = "cuda"
 DEFAULT_BATCH_SIZE = 100
+DEFAULT_TABLE = "chunks"
 
 VOXCAST = {
     'init': f"{Sigil.GOLD}++AWAKENING++{Sigil.RESET} The Epistolary channels the Immaterium. {Sigil.GREEN}For the Lion!{Sigil.RESET}",
@@ -69,21 +70,21 @@ def create_connection_pool(min_conn: int = 2, max_conn: int = 10) -> pool.Thread
         exit(1)
 
 
-def get_unembedded_chunks(conn, batch_size: int, filter_col: str | None, filter_val: str | None) -> list:
+def get_unembedded_chunks(conn, batch_size: int, filter_col: str | None, filter_val: str | None, table_name: str = DEFAULT_TABLE) -> list:
     cursor = conn.cursor()
     if filter_col and filter_val:
         cursor.execute(f"""
             SELECT id, content
-            FROM chunks
+            FROM "{table_name}"
             WHERE embedding IS NULL
             AND "{filter_col}" = %s
             ORDER BY id
             LIMIT %s
         """, (filter_val, batch_size))
     else:
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT id, content
-            FROM chunks
+            FROM "{table_name}"
             WHERE embedding IS NULL
             ORDER BY id
             LIMIT %s
@@ -93,15 +94,15 @@ def get_unembedded_chunks(conn, batch_size: int, filter_col: str | None, filter_
     return rows
 
 
-def get_unembedded_count(conn, filter_col: str | None, filter_val: str | None) -> int:
+def get_unembedded_count(conn, filter_col: str | None, filter_val: str | None, table_name: str = DEFAULT_TABLE) -> int:
     cursor = conn.cursor()
     if filter_col and filter_val:
         cursor.execute(f"""
-            SELECT COUNT(*) FROM chunks
+            SELECT COUNT(*) FROM "{table_name}"
             WHERE embedding IS NULL AND "{filter_col}" = %s
         """, (filter_val,))
     else:
-        cursor.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NULL")
+        cursor.execute(f'SELECT COUNT(*) FROM "{table_name}" WHERE embedding IS NULL')
     count = cursor.fetchone()[0]
     cursor.close()
     return count

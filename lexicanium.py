@@ -19,6 +19,7 @@ import re
 
 DEFAULT_CHUNK_SIZE = 4000
 DEFAULT_CHUNK_OVERLAP = 800
+DEFAULT_SEMANTIC_TABLE = "semantic_chunks"
 
 # Expected filename pattern: faction_edition_type.pdf
 # Examples: dark_angels_10th_codex.pdf, space_marines_9th_rules.pdf, loyalist_legiones_2nd_liber.pdf
@@ -53,7 +54,11 @@ VOXCAST = {
     'pdf_complete': f"Sanctified {{count}} fragments from {{name}}. {Sigil.GREEN}The Emperor Protects.{Sigil.RESET}",
     'pdf_fail': f"{Sigil.RED}Sanctification failed for {{name}}: {{error}}. Summon a Techmarine!{Sigil.RESET}",
     'creds_fail': f"{Sigil.RED}++ACCESS DENIED++{Sigil.RESET} Vault credentials corrupted. The Fallen must not learn our secrets!",
-    'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} The data-communion has ended. {Sigil.GREEN}Praise the Omnissiah!{Sigil.RESET}"
+    'finished': f"{Sigil.GOLD}++RITUAL COMPLETE++{Sigil.RESET} The data-communion has ended. {Sigil.GREEN}Praise the Omnissiah!{Sigil.RESET}",
+    'semantic_section': "Entering sacred section: {section} (page {page})",
+    'semantic_table': "Data-tablet recovered: {rows} rows of sacred numerics",
+    'semantic_chunks': "Hierarchical sanctification: {sections} sections, {tables} tables, {chunks} passages",
+    'semantic_complete': f"{{count}} semantic fragments inscribed from {{name}}. {Sigil.GREEN}The Codex approves.{Sigil.RESET}"
 }
 
 DEFAULT_ARCHIVE_DIR = Path("./archive")
@@ -107,6 +112,54 @@ def setup_database(conn, table_name: str = DEFAULT_TABLE):
             sql.Identifier(index_name),
             sql.Identifier(table_name)
         ))
+        conn.commit()
+        logger.info(VOXCAST['db_ready'].format(table=table_name))
+    except Exception as e:
+        logger.error(VOXCAST['db_fail'].format(error=e))
+        conn.rollback()
+    finally:
+        cursor.close()
+
+
+def setup_semantic_database(conn, table_name: str = DEFAULT_SEMANTIC_TABLE):
+    """Setup enhanced table schema for semantic chunking with hierarchy and page tracking."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {} (
+                id SERIAL PRIMARY KEY,
+                game VARCHAR(100),
+                faction VARCHAR(100),
+                edition VARCHAR(20),
+                category VARCHAR(50),
+                source_file VARCHAR(500),
+                chunk_index INTEGER,
+                content TEXT,
+                element_type VARCHAR(100),
+                section_hierarchy TEXT[],
+                page_number INTEGER,
+                is_table BOOLEAN DEFAULT FALSE,
+                parent_chunk_id INTEGER REFERENCES {}(id),
+                embedding VECTOR(1536),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """).format(sql.Identifier(table_name), sql.Identifier(table_name)))
+        conn.commit()
+
+        for idx_col in ['source_file', 'section_hierarchy', 'element_type', 'page_number']:
+            index_name = f"idx_{table_name}_{idx_col}"
+            if idx_col == 'section_hierarchy':
+                cursor.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} USING GIN ({});").format(
+                    sql.Identifier(index_name),
+                    sql.Identifier(table_name),
+                    sql.Identifier(idx_col)
+                ))
+            else:
+                cursor.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} ({});").format(
+                    sql.Identifier(index_name),
+                    sql.Identifier(table_name),
+                    sql.Identifier(idx_col)
+                ))
         conn.commit()
         logger.info(VOXCAST['db_ready'].format(table=table_name))
     except Exception as e:
@@ -170,6 +223,24 @@ def insert_chunks_batch(conn, chunks: list[tuple], table_name: str = DEFAULT_TAB
         cursor.close()
 
 
+def insert_semantic_chunks_batch(conn, chunks: list[tuple], table_name: str = DEFAULT_SEMANTIC_TABLE):
+    cursor = conn.cursor()
+    try:
+        query = sql.SQL("""
+            INSERT INTO {} (game, faction, edition, category, source_file, chunk_index, content,
+                           element_type, section_hierarchy, page_number, is_table)
+            VALUES %s
+        """).format(sql.Identifier(table_name))
+        psycopg2.extras.execute_values(cursor, query, chunks, page_size=100)
+        conn.commit()
+        logger.info(VOXCAST['batch_insert'].format(count=len(chunks)))
+    except Exception as e:
+        logger.error(VOXCAST['batch_fail'].format(error=e))
+        conn.rollback()
+    finally:
+        cursor.close()
+
+
 def parse_pdf_filename(pdf: Path) -> dict:
     match = FILENAME_PATTERN.match(pdf.name)
     if not match:
@@ -206,6 +277,130 @@ def chunk_elements(elements: list, chunk_size: int, chunk_overlap: int) -> list[
             chunks.append(chunk)
 
         start = end - chunk_overlap if end < len(full_text) else len(full_text)
+
+    return chunks
+
+
+def get_element_page(element) -> int | None:
+    if hasattr(element, 'metadata') and hasattr(element.metadata, 'page_number'):
+        return element.metadata.page_number
+    return None
+
+
+def get_element_type(element) -> str:
+    return type(element).__name__
+
+
+def is_title_element(element) -> bool:
+    return get_element_type(element) in ('Title', 'Header')
+
+
+def is_table_element(element) -> bool:
+    return get_element_type(element) == 'Table'
+
+
+def format_table_content(element) -> str:
+    if hasattr(element, 'metadata') and hasattr(element.metadata, 'text_as_html'):
+        return element.metadata.text_as_html
+    return str(element)
+
+
+def semantic_chunk_elements(elements: list, chunk_size: int, chunk_overlap: int) -> list[dict]:
+    chunks = []
+    current_hierarchy = []
+    current_page = None
+    current_section_elements = []
+    section_count = 0
+    table_count = 0
+
+    def flush_section(hierarchy: list, page: int | None):
+        nonlocal section_count
+        if not current_section_elements:
+            return
+
+        section_text = "\n\n".join(str(el) for el in current_section_elements)
+        if not section_text.strip():
+            return
+
+        if len(section_text) <= chunk_size:
+            chunks.append({
+                'content': section_text,
+                'element_type': 'section',
+                'section_hierarchy': list(hierarchy) if hierarchy else ['Root'],
+                'page_number': page,
+                'is_table': False
+            })
+        else:
+            sub_chunks = chunk_with_overlap(section_text, chunk_size, chunk_overlap)
+            for sub_chunk in sub_chunks:
+                chunks.append({
+                    'content': sub_chunk,
+                    'element_type': 'section_fragment',
+                    'section_hierarchy': list(hierarchy) if hierarchy else ['Root'],
+                    'page_number': page,
+                    'is_table': False
+                })
+        section_count += 1
+
+    def chunk_with_overlap(text: str, size: int, overlap: int) -> list[str]:
+        if len(text) <= size:
+            return [text] if text.strip() else []
+
+        result = []
+        start = 0
+        while start < len(text):
+            end = start + size
+            if end < len(text):
+                break_point = text.rfind("\n\n", start + size // 2, end)
+                if break_point != -1:
+                    end = break_point
+            chunk = text[start:end].strip()
+            if chunk:
+                result.append(chunk)
+            start = end - overlap if end < len(text) else len(text)
+        return result
+
+    for element in elements:
+        page = get_element_page(element)
+        if page is not None:
+            current_page = page
+
+        if is_title_element(element):
+            flush_section(current_hierarchy, current_page)
+            current_section_elements = []
+
+            title_text = str(element).strip()
+            if title_text:
+                current_hierarchy = [title_text]
+                logger.debug(VOXCAST['semantic_section'].format(section=title_text, page=current_page or '?'))
+
+        elif is_table_element(element):
+            flush_section(current_hierarchy, current_page)
+            current_section_elements = []
+
+            table_content = format_table_content(element)
+            table_header = current_hierarchy[-1] if current_hierarchy else 'Data Table'
+            formatted_table = f"[TABLE: {table_header}]\n{table_content}"
+
+            chunks.append({
+                'content': formatted_table,
+                'element_type': 'table',
+                'section_hierarchy': list(current_hierarchy) if current_hierarchy else ['Tables'],
+                'page_number': current_page,
+                'is_table': True
+            })
+            table_count += 1
+
+        else:
+            current_section_elements.append(element)
+
+    flush_section(current_hierarchy, current_page)
+
+    logger.info(VOXCAST['semantic_chunks'].format(
+        sections=section_count,
+        tables=table_count,
+        chunks=len(chunks)
+    ))
 
     return chunks
 
@@ -249,10 +444,50 @@ def process_pdf(conn_pool: pool.ThreadedConnectionPool, game: str, pdf: Path,
         conn_pool.putconn(conn)
 
 
+def process_pdf_semantic(conn_pool: pool.ThreadedConnectionPool, game: str, pdf: Path,
+                          table_name: str = DEFAULT_SEMANTIC_TABLE,
+                          chunk_size: int = DEFAULT_CHUNK_SIZE,
+                          chunk_overlap: int = DEFAULT_CHUNK_OVERLAP):
+    metadata = parse_pdf_filename(pdf)
+
+    conn = conn_pool.getconn()
+    try:
+        existing_count = get_chunk_count(conn, pdf.name, table_name)
+        if existing_count > 0:
+            logger.info(VOXCAST['pdf_skip'].format(name=pdf.name, count=existing_count))
+            return
+    finally:
+        conn_pool.putconn(conn)
+
+    file_size_mb = pdf.stat().st_size / (1024 * 1024)
+    logger.info(VOXCAST['pdf_processing'].format(name=pdf.name, size=file_size_mb))
+    start = time.perf_counter()
+    elements = partition_pdf(str(pdf))
+    elapsed = time.perf_counter() - start
+    logger.info(VOXCAST['pdf_parsed'].format(name=pdf.name, time=elapsed, count=len(elements)))
+
+    semantic_chunks = semantic_chunk_elements(elements, chunk_size, chunk_overlap)
+
+    chunks = [
+        (game, metadata['faction'], metadata['edition'], metadata['category'],
+         pdf.name, i, chunk['content'], chunk['element_type'],
+         chunk['section_hierarchy'], chunk['page_number'], chunk['is_table'])
+        for i, chunk in enumerate(semantic_chunks)
+    ]
+
+    conn = conn_pool.getconn()
+    try:
+        insert_semantic_chunks_batch(conn, chunks, table_name)
+        logger.info(VOXCAST['semantic_complete'].format(count=len(semantic_chunks), name=pdf.name))
+    finally:
+        conn_pool.putconn(conn)
+
+
 def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool,
                       table_name: str = DEFAULT_TABLE,
                       chunk_size: int = DEFAULT_CHUNK_SIZE,
-                      chunk_overlap: int = DEFAULT_CHUNK_OVERLAP):
+                      chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+                      semantic: bool = False):
     directories = [d for d in dest.iterdir() if d.is_dir()]
 
     for game_dir in directories:
@@ -260,7 +495,10 @@ def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool,
         logger.info(VOXCAST['pdf_found'].format(count=len(pdf_files), game=game_dir.name))
         for pdf in pdf_files:
             try:
-                process_pdf(conn_pool, game_dir.name, pdf, table_name, chunk_size, chunk_overlap)
+                if semantic:
+                    process_pdf_semantic(conn_pool, game_dir.name, pdf, table_name, chunk_size, chunk_overlap)
+                else:
+                    process_pdf(conn_pool, game_dir.name, pdf, table_name, chunk_size, chunk_overlap)
             except Exception as e:
                 logger.error(VOXCAST['pdf_fail'].format(name=pdf.name, error=e))
 
@@ -270,16 +508,21 @@ def chunk_data_slates(dest: Path, conn_pool: pool.ThreadedConnectionPool,
               default=DEFAULT_ARCHIVE_DIR, help='Directory containing zip files')
 @click.option('--dest', '-d', type=click.Path(path_type=Path),
               default=DEFAULT_DESTINATION, help='Destination directory for extraction')
-@click.option('--table', '-t', default=DEFAULT_TABLE,
+@click.option('--table', '-t', default=None,
               help='Table name for storing chunks in the vault')
 @click.option('--chunk-size', '-c', type=int, default=DEFAULT_CHUNK_SIZE,
               help='Size of each sacred passage in characters')
 @click.option('--chunk-overlap', '-o', type=int, default=DEFAULT_CHUNK_OVERLAP,
               help='Overlap between passages to preserve context')
 @click.option('--skip-extract', is_flag=True, help='Skip zip extraction, process existing Data-Slates only')
-def main(source: Path, dest: Path, table: str, chunk_size: int, chunk_overlap: int, skip_extract: bool) -> None:
+@click.option('--semantic', is_flag=True, help='Use hierarchical semantic chunking with section/table awareness')
+def main(source: Path, dest: Path, table: str | None, chunk_size: int, chunk_overlap: int,
+         skip_extract: bool, semantic: bool) -> None:
     """Extract zip files from archive directory into Data-Slates."""
     dest.mkdir(parents=True, exist_ok=True)
+
+    if table is None:
+        table = DEFAULT_SEMANTIC_TABLE if semantic else DEFAULT_TABLE
 
     logger.info(VOXCAST['init'])
 
@@ -297,10 +540,13 @@ def main(source: Path, dest: Path, table: str, chunk_size: int, chunk_overlap: i
     conn_pool = create_connection_pool()
 
     conn = conn_pool.getconn()
-    setup_database(conn, table)
+    if semantic:
+        setup_semantic_database(conn, table)
+    else:
+        setup_database(conn, table)
     conn_pool.putconn(conn)
 
-    chunk_data_slates(dest, conn_pool, table, chunk_size, chunk_overlap)
+    chunk_data_slates(dest, conn_pool, table, chunk_size, chunk_overlap, semantic=semantic)
     conn_pool.closeall()
 
     logger.info(VOXCAST['finished'])
