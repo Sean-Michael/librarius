@@ -22,8 +22,8 @@ DEFAULT_CHUNK_OVERLAP = 800
 DEFAULT_SEMANTIC_TABLE = "semantic_chunks"
 
 # Expected filename pattern: faction_edition_type.pdf
-# Examples: dark_angels_10th_codex.pdf, space_marines_9th_rules.pdf, loyalist_legiones_2nd_liber.pdf
-FILENAME_PATTERN = re.compile(r'^(?P<faction>.+)_(?P<edition>\d+(?:st|nd|rd|th))_(?P<type>\w+)\.pdf$', re.IGNORECASE)
+# Examples: dark_angels_10th_codex.pdf, space_marines_9th_rules.pdf, loyalist_legiones_2nd_liber.pdf, annual_2022_reference.pdf
+FILENAME_PATTERN = re.compile(r'^(?P<faction>.+)_(?P<edition>\d+(?:st|nd|rd|th)?|\d{4})_(?P<type>\w+)\.pdf$', re.IGNORECASE)
 
 class Sigil:
     GREEN = '\033[38;5;34m'
