@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_PG_CREDS = Path("./pg-credentials.json")
 DEFAULT_EMBED_MODEL = "intfloat/multilingual-e5-large-instruct"
 DEFAULT_CHAT_MODEL = "mistral:7b"
-DEFAULT_DEVICE = "cpu"
+DEFAULT_DEVICE = "cuda"
+DEFAULT_TABLE = "chunks"
 
 
 VOXCAST = {
@@ -72,30 +73,43 @@ def load_model(embed_model_name: str, device: str):
         return None
 
 
-def get_k_nearest(embedded_query, conn, game):
+def get_k_nearest(embedded_query, conn, game, table_name: str = DEFAULT_TABLE):
     cursor = conn.cursor()
+    is_semantic = table_name == "semantic_chunks"
     try:
-        cursor.execute("""
-            SELECT content, embedding <-> %s AS distance
-            FROM chunks
-            WHERE game = %s
-            ORDER BY distance
-            LIMIT 5
-        """, (embedded_query,game))
+        if is_semantic:
+            cursor.execute(f"""
+                SELECT content, embedding <-> %s AS distance,
+                       section_hierarchy, page_number, element_type
+                FROM "{table_name}"
+                WHERE game = %s
+                ORDER BY distance
+                LIMIT 5
+            """, (embedded_query, game))
+        else:
+            cursor.execute(f"""
+                SELECT content, embedding <-> %s AS distance
+                FROM "{table_name}"
+                WHERE game = %s
+                ORDER BY distance
+                LIMIT 5
+            """, (embedded_query, game))
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception=e))
-    k_nearest=cursor.fetchall()
-    return k_nearest
+    k_nearest = cursor.fetchall()
+    return k_nearest, is_semantic
 
 
 def format_pgvector(embedding: np.ndarray) -> str:
     return '[' + ','.join(map(str, embedding.tolist())) + ']'
 
 
-def interactive_mode(embed_model, chat_model_name: str, conn, game: str):
+def interactive_mode(embed_model, chat_model_name: str, conn, game: str,
+                     table_name: str = DEFAULT_TABLE):
     history = []
     print(f"\n{Sigil.GOLD}++CHAT MODE ACTIVATED++{Sigil.RESET}")
     print(f"Using chat model: {Sigil.GREEN}{chat_model_name}{Sigil.RESET}")
+    print(f"Querying table: {Sigil.GREEN}{table_name}{Sigil.RESET}")
     print("Commands: 'q' to quit, 'clear' to reset conversation history\n")
 
     while True:
@@ -111,7 +125,7 @@ def interactive_mode(embed_model, chat_model_name: str, conn, game: str):
                 continue
 
             response, history = query_with_rag(
-                query, embed_model, chat_model_name, conn, game, history
+                query, embed_model, chat_model_name, conn, game, table_name, history
             )
 
             if response:
@@ -124,32 +138,46 @@ def interactive_mode(embed_model, chat_model_name: str, conn, game: str):
             break
 
 
-def embed_and_retrieve(user_query: str, model, conn, game: str) -> list:
+def embed_and_retrieve(user_query: str, model, conn, game: str,
+                       table_name: str = DEFAULT_TABLE) -> tuple[list, bool]:
     try:
         embedded_query = model.encode(user_query, normalize_embeddings=True, show_progress_bar=False)
         logger.info(VOXCAST['embed_complete'])
         formatted_embed_query = format_pgvector(embedded_query)
-        chunks = get_k_nearest(formatted_embed_query, conn, game)
-        return chunks
+        chunks, is_semantic = get_k_nearest(formatted_embed_query, conn, game, table_name)
+        return chunks, is_semantic
     except Exception as e:
         logger.error(VOXCAST['exception'].format(exception=e))
-        return []
+        return [], False
 
 
 def query_with_rag(user_query: str, embed_model, chat_model_name: str,
-                   conn, game: str, history: list | None = None) -> tuple:
-    chunks = embed_and_retrieve(user_query, embed_model, conn, game)
+                   conn, game: str, table_name: str = DEFAULT_TABLE,
+                   history: list | None = None) -> tuple:
+    chunks, is_semantic = embed_and_retrieve(user_query, embed_model, conn, game, table_name)
 
     if not chunks:
         return "No relevant context found in the Librarius.", history or []
 
-    response, new_history = chat_with_chunks(chat_model_name, user_query, chunks, history)
+    response, new_history = chat_with_chunks(chat_model_name, user_query, chunks, is_semantic, history)
     return response, new_history 
 
 
-def build_rag_prompt(query: str, chunks: list) -> str:
-    context = "\n\n".join([f"[Chunk {i+1}] (distance: {dist:.4f})\n{content}"
-                          for i, (content, dist) in enumerate(chunks)])
+def build_rag_prompt(query: str, chunks: list, is_semantic: bool = False) -> str:
+    if is_semantic:
+        context_parts = []
+        for i, (content, dist, hierarchy, page, elem_type) in enumerate(chunks):
+            section = " > ".join(hierarchy) if hierarchy else "Unknown"
+            page_str = f"p.{page}" if page else "?"
+            context_parts.append(
+                f"[Chunk {i+1}] ({elem_type}, {page_str}, distance: {dist:.4f})\n"
+                f"Section: {section}\n{content}"
+            )
+        context = "\n\n".join(context_parts)
+    else:
+        context = "\n\n".join([f"[Chunk {i+1}] (distance: {dist:.4f})\n{content}"
+                              for i, (content, dist) in enumerate(chunks)])
+
     return f"""You are a knowledgeable assistant for tabletop gaming rules. Use the following retrieved context to answer the user's question. If the context doesn't contain relevant information, say so clearly.
 
 RETRIEVED CONTEXT:
@@ -160,11 +188,12 @@ USER QUESTION: {query}
 Provide a clear, accurate answer based on the context above."""
 
 
-def chat_with_chunks(model_name: str, query: str, chunks: list, history: list | None = None) -> tuple:
+def chat_with_chunks(model_name: str, query: str, chunks: list,
+                     is_semantic: bool = False, history: list | None = None) -> tuple:
     if history is None:
         history = []
 
-    rag_prompt = build_rag_prompt(query, chunks)
+    rag_prompt = build_rag_prompt(query, chunks, is_semantic)
 
     messages = history + [{"role": "user", "content": rag_prompt}]
 
@@ -187,8 +216,9 @@ def chat_with_chunks(model_name: str, query: str, chunks: list, history: list | 
 @click.option('--chat_model_name', '-c', default=DEFAULT_CHAT_MODEL, help='Ollama model for chat responses')
 @click.option('--device', '-d', default=DEFAULT_DEVICE, help='Device to run model on (cuda/cpu)')
 @click.option('--game', '-g', default=None, help='Filter results to a particular game (30k, 40k, Killteam2)')
+@click.option('--table', '-t', default=DEFAULT_TABLE, help='Table to query (chunks or semantic_chunks)')
 @click.argument('query', required=False)
-def main(embed_model_name: str, chat_model_name: str, device: str, query: str, game: str):
+def main(embed_model_name: str, chat_model_name: str, device: str, query: str, game: str, table: str):
     conn_pool = create_connection_pool()
     conn = conn_pool.getconn()
 
@@ -200,11 +230,11 @@ def main(embed_model_name: str, chat_model_name: str, device: str, query: str, g
 
     try:
         if query:
-            response, _ = query_with_rag(query, embed_model, chat_model_name, conn, game)
+            response, _ = query_with_rag(query, embed_model, chat_model_name, conn, game, table)
             if response:
                 print(f"\n{Sigil.GREEN}[CODICIER]{Sigil.RESET} {response}\n")
         else:
-            interactive_mode(embed_model, chat_model_name, conn, game)
+            interactive_mode(embed_model, chat_model_name, conn, game, table)
     finally:
         logger.info(VOXCAST['close_conn'])
         conn_pool.closeall()
