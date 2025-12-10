@@ -49,6 +49,27 @@ def categorize_pdf(pdf: Path) -> str:
     return "misc"
 ```
 
+##### UPDATE: 
+
+This is actually no longer the case and I've instead opted for creating a rigid templatized filename schema if you will that is enforced strictly. The loss in flexibility of naming is made up for by the gains of adding more metadata easily.
+
+| Metadata | Source | Example Values |
+|----------|--------|----------------|
+| `faction` | Filename prefix | `dark_angels`, `space_marines`, `orks`, `loyalist_legiones` |
+| `edition` | Filename middle | `5th`, `9th`, `10th`, `2nd` |
+| `category` | Filename suffix | `codex`, `rules`, `liber`, `expansion`, `errata` |
+| `game` | Parent directory | `40k`, `30k`, `Killteam2` |
+
+The filename pattern is enforced via regex: `{faction}_{edition}_{category}.pdf`
+
+```python
+# Expected filename pattern: faction_edition_type.pdf
+# Examples: dark_angels_10th_codex.pdf, space_marines_9th_rules.pdf, loyalist_legiones_2nd_liber.pdf
+FILENAME_PATTERN = re.compile(r'^(?P<faction>.+)_(?P<edition>\d+(?:st|nd|rd|th))_(?P<type>\w+)\.pdf$', re.IGNORECASE)
+```
+
+It adds some additional labor to no longer being able to just drag and drop zips or pdfs into `Data-Slates` but it is well worth it to hopefully improve the retrieval system.
+
 This will get saved when the PDF is processed further into partitions.
 
  For partitioning the PDFs into smaller bite-sized 'chunks' it utilizes the `unstructured` library, writing to a PostgreSQL database hosted on [Caliban.](https://github.com/Sean-Michael/home-kubernetes-cloud) in batches for speed. 
@@ -57,7 +78,7 @@ This will get saved when the PDF is processed further into partitions.
 
 #### Database chunks Table Schema
 
-The chunks are inserted into the database with the following table schema which provides useful metadata for embedding and retrieval later. 
+The chunks are inserted into the database with the following table schema which provides useful metadata for embedding and retrieval later.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -72,6 +93,32 @@ The chunks are inserted into the database with the following table schema which 
 | `created_at` | `TIMESTAMP` | Auto-set insertion timestamp |
 
 You will notice that we included the `embedding` column but haven't processed any embeddings yet. On to the next step!
+
+#### Semantic Chunking
+
+The standard chunking approach outlined above represents my first pass at the architecutre. After reading more online and in the excellent book "AI Engineering" by Chip Huyen, I learned about the different patterns we could impelemnt to improve performance. Flattening all PDF elements into a single text stream and splitting by character count as we were previously doing leaves much room for improvement. As we saw in the initial retrievals I felt like the system was missing a significant portion of the content that could be used to answer user queries. Game rules are inherently structuredk, they usually follow a pattern of turns and "phases", weapon and unit profiles often are part of distinct and cohesive tables. Splitting up these units that are designed to be together can remove valuable and necessary context. In order to remedy this we needed a more 'semantic' appraoch to chunking.
+
+The `--semantic` flag enables hierarchical chunking that preserves this structure:
+
+```bash
+python lexicanium.py --skip-extract --semantic
+```
+
+This writes to a separate `semantic_chunks` table with additional columns for A/B testing against the original approach:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `section_hierarchy` | `TEXT[]` | Breadcrumb trail of section headers (e.g., `['Combat', 'Attack Rolls']`) |
+| `page_number` | `INTEGER` | Source page for citations back to the original tome |
+| `is_table` | `BOOLEAN` | Flags data tables (weapon profiles, point costs, etc.) |
+| `parent_chunk_id` | `INTEGER` | Foreign key for parent-child chunk relationships |
+
+Key differences in semantic mode:
+- **Section-aware splitting**: Title/Header elements from `unstructured` define chunk boundaries. Content stays grouped under its heading.
+- **Table preservation**: Tables are extracted as standalone chunks with their headers intact, preventing stat blocks from getting mangled (hopefully).
+- **Hierarchy tracking**: Each chunk knows which section it belongs to, enabling queries like "find all chunks under Combat Rules".
+
+
 
 ### 2. Embedding
 
@@ -92,9 +139,12 @@ python epistolary.py --filter-col game --filter-val "40k"
 
 # list available values for a column
 python epistolary.py --list-values game
+
+# embed the semantic_chunks table instead
+python epistolary.py --table semantic_chunks
 ```
 
-You can also specify `--device cpu` if you don't have a GPU, though it will be significantly slower.
+You can also specify `--device cpu` if you don't have a CUDA capable device like a GPU, though it may slower.
 
 ### 3. Retrieval & Generation
 
@@ -110,6 +160,11 @@ python codicier.py --game "40k" "What are the rules for overwatch?"
 
 # interactive chat mode (omit the query argument)
 python codicier.py --game "40k"
+
+# query the semantic_chunks table for richer context
+python codicier.py --game "40k" --table semantic_chunks
 ```
 
 The `--game` flag filters retrieval to chunks from a specific game system, which helps anchor responses in the correct ruleset. In interactive mode you can type `clear` to reset conversation history or `q` to quit.
+
+When querying `semantic_chunks`, retrieved context includes section hierarchy and page numbers, giving the LLM better grounding for its responses and enabling it to cite specific pages.
