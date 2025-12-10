@@ -108,12 +108,11 @@ def get_unembedded_count(conn, filter_col: str | None, filter_val: str | None, t
     return count
 
 
-def get_distinct_values(conn, column: str) -> list:
-    """Get distinct values for a column to help user pick a filter."""
+def get_distinct_values(conn, column: str, table_name: str = DEFAULT_TABLE) -> list:
     cursor = conn.cursor()
     cursor.execute(f"""
         SELECT DISTINCT "{column}"
-        FROM chunks
+        FROM "{table_name}"
         WHERE embedding IS NULL
         ORDER BY "{column}"
     """)
@@ -122,16 +121,16 @@ def get_distinct_values(conn, column: str) -> list:
     return values
 
 
-def update_embeddings(conn, updates: list[tuple]):
+def update_embeddings(conn, updates: list[tuple], table_name: str = DEFAULT_TABLE):
     cursor = conn.cursor()
     try:
         execute_values(
             cursor,
-            """
-            UPDATE chunks 
+            f"""
+            UPDATE "{table_name}"
             SET embedding = data.embedding::vector
             FROM (VALUES %s) AS data(embedding, id)
-            WHERE chunks.id = data.id
+            WHERE "{table_name}".id = data.id
             """,
             updates,
             template="(%s, %s)"
@@ -157,7 +156,8 @@ def format_pgvector(embedding: np.ndarray) -> str:
     return '[' + ','.join(map(str, embedding.tolist())) + ']'
 
 
-def db_writer_worker(conn_pool: pool.ThreadedConnectionPool, write_queue: queue.Queue, stop_event: threading.Event):
+def db_writer_worker(conn_pool: pool.ThreadedConnectionPool, write_queue: queue.Queue,
+                     stop_event: threading.Event, table_name: str = DEFAULT_TABLE):
     while not stop_event.is_set() or not write_queue.empty():
         try:
             updates = write_queue.get(timeout=0.5)
@@ -166,16 +166,17 @@ def db_writer_worker(conn_pool: pool.ThreadedConnectionPool, write_queue: queue.
 
         conn = conn_pool.getconn()
         try:
-            update_embeddings(conn, updates)
+            update_embeddings(conn, updates, table_name)
         finally:
             conn_pool.putconn(conn)
             write_queue.task_done()
 
 
-def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None, filter_val: str | None):
+def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
+                      filter_val: str | None, table_name: str = DEFAULT_TABLE):
     conn = conn_pool.getconn()
     try:
-        total_to_embed = get_unembedded_count(conn, filter_col, filter_val)
+        total_to_embed = get_unembedded_count(conn, filter_col, filter_val, table_name)
     finally:
         conn_pool.putconn(conn)
 
@@ -188,7 +189,7 @@ def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
 
     writer_thread = threading.Thread(
         target=db_writer_worker,
-        args=(conn_pool, write_queue, stop_event),
+        args=(conn_pool, write_queue, stop_event, table_name),
         daemon=True
     )
     writer_thread.start()
@@ -198,7 +199,7 @@ def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
     while True:
         conn = conn_pool.getconn()
         try:
-            chunks = get_unembedded_chunks(conn, batch_size, filter_col, filter_val)
+            chunks = get_unembedded_chunks(conn, batch_size, filter_col, filter_val, table_name)
         finally:
             conn_pool.putconn(conn)
 
@@ -240,13 +241,15 @@ def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
 @click.option('--list-values', '-l', default=None, help='List distinct values for a column and exit')
 @click.option('--batch-size', '-b', default=DEFAULT_BATCH_SIZE, help='Batch size for embedding')
 @click.option('--device', '-d', default=DEFAULT_DEVICE, help='Device to run model on (cuda/cpu)')
-def main(model_name: str, filter_col: str, filter_val: str, list_values: str, batch_size: int, device: str):
+@click.option('--table', '-t', default=DEFAULT_TABLE, help='Table to embed chunks from (chunks or semantic_chunks)')
+def main(model_name: str, filter_col: str, filter_val: str, list_values: str,
+         batch_size: int, device: str, table: str):
     conn_pool = create_connection_pool()
 
     if list_values:
         conn = conn_pool.getconn()
         try:
-            values = get_distinct_values(conn, list_values)
+            values = get_distinct_values(conn, list_values, table)
             click.echo(VOXCAST['catalogus_header'].format(column=list_values))
             for val in values:
                 click.echo(VOXCAST['catalogus_item'].format(val=val))
@@ -266,7 +269,7 @@ def main(model_name: str, filter_col: str, filter_val: str, list_values: str, ba
         return
 
     try:
-        embed_data_slates(model, conn_pool, batch_size, filter_col, filter_val)
+        embed_data_slates(model, conn_pool, batch_size, filter_col, filter_val, table)
     finally:
         logger.info(VOXCAST['close_conn'])
         conn_pool.closeall()
