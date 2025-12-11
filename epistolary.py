@@ -46,7 +46,9 @@ VOXCAST = {
     'filter_active': "Watchers performing filtration rites: {col} = '{val}'.",
     'catalogus_header': f"{Sigil.GOLD}++CATALOGUS QUERY++{Sigil.RESET} Distinct values within column '{{column}}':",
     'catalogus_item': "  * {val}",
-    'close_conn': "Severing noospheric link. We are blind to the warp."
+    'close_conn': "Severing noospheric link. We are blind to the warp.",
+    'column_created': "Embedding column sanctified: VECTOR({dim}) added to {table}",
+    'column_exists': "Embedding column already exists in {table}",
 }
 
 
@@ -68,6 +70,29 @@ def create_connection_pool(min_conn: int = 2, max_conn: int = 10) -> pool.Thread
     except Exception as e:
         logger.error(VOXCAST['db_fail'].format(error=e))
         exit(1)
+
+
+def ensure_embedding_column(conn, table_name: str, embedding_dim: int):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = %s AND column_name = 'embedding'
+        """, (table_name,))
+        if cursor.fetchone():
+            logger.info(VOXCAST['column_exists'].format(table=table_name))
+        else:
+            cursor.execute(f"""
+                ALTER TABLE "{table_name}"
+                ADD COLUMN embedding VECTOR({embedding_dim})
+            """)
+            conn.commit()
+            logger.info(VOXCAST['column_created'].format(dim=embedding_dim, table=table_name))
+    except Exception as e:
+        logger.error(VOXCAST['db_fail'].format(error=e))
+        conn.rollback()
+    finally:
+        cursor.close()
 
 
 def get_unembedded_chunks(conn, batch_size: int, filter_col: str | None, filter_val: str | None, table_name: str = DEFAULT_TABLE) -> list:
@@ -211,7 +236,7 @@ def embed_data_slates(model, conn_pool, batch_size: int, filter_col: str | None,
 
         logger.info(VOXCAST['batch_start'].format(count=len(chunks)))
 
-        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        embeddings = model.encode(["passage: " + t for t in texts], normalize_embeddings=True, show_progress_bar=False)
 
         updates = [
             (format_pgvector(emb), chunk_id)
@@ -267,6 +292,16 @@ def main(model_name: str, filter_col: str, filter_val: str, list_values: str,
     model = load_model(model_name, device)
     if model is None:
         return
+
+    embedding_dim = model.get_sentence_embedding_dimension()
+    if embedding_dim is None:
+        logger.error(VOXCAST['exception'].format(exception="Model must have an embedding dimension"))
+        return
+    conn = conn_pool.getconn()
+    try:
+        ensure_embedding_column(conn, table, embedding_dim)
+    finally:
+        conn_pool.putconn(conn)
 
     try:
         embed_data_slates(model, conn_pool, batch_size, filter_col, filter_val, table)
