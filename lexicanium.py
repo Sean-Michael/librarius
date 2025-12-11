@@ -101,7 +101,6 @@ def setup_database(conn, table_name: str = DEFAULT_TABLE):
                 chunk_index INTEGER,
                 content TEXT,
                 element_type VARCHAR(100),
-                embedding VECTOR(1536),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """).format(sql.Identifier(table_name)))
@@ -122,7 +121,6 @@ def setup_database(conn, table_name: str = DEFAULT_TABLE):
 
 
 def setup_semantic_database(conn, table_name: str = DEFAULT_SEMANTIC_TABLE):
-    """Setup enhanced table schema for semantic chunking with hierarchy and page tracking."""
     cursor = conn.cursor()
     try:
         cursor.execute(sql.SQL("""
@@ -140,7 +138,6 @@ def setup_semantic_database(conn, table_name: str = DEFAULT_SEMANTIC_TABLE):
                 page_number INTEGER,
                 is_table BOOLEAN DEFAULT FALSE,
                 parent_chunk_id INTEGER REFERENCES {}(id),
-                embedding VECTOR(1536),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """).format(sql.Identifier(table_name), sql.Identifier(table_name)))
